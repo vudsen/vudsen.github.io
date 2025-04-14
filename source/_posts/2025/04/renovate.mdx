@@ -1,0 +1,64 @@
+---
+title: Renovate + GitLab 私有化部署踩坑记录
+date: 2025-04-03 09:55:14
+seo:
+  description: 记录了 Renovate 集成 GitLab 私有化部署过程中遇到的坑。
+---
+
+由于公司的依赖升级总是等着一段时间直接全量扫描依赖，每次都是一大堆依赖让我们手动升级，工作量都特别很大，而且很容易升漏。所以这里考虑引入 `Renovate` 主动出击，自动化依赖的升级。
+
+常用链接：
+
+- [Renovate Docs](https://docs.renovatebot.com/)
+- [renovate-ce-ee](https://github.com/mend/renovate-ce-ee)
+- [安装文档](https://github.com/mend/renovate-ce-ee/tree/78b5728981a4cba356f25ba121cfd7229636f5bb/docs)
+
+## 配置
+
+安装很简单，我是使用的 docker-compose 的方式安装的，这里主要讲一下配置。
+
+### 使用 SSH 克隆
+
+要使用 ssh, 需要把 [gitUrl](https://docs.renovatebot.com/self-hosted-configuration/#giturl) 设置为 `ssh`，换成环境变量就是 `RENOVATE_GIT_URL`。换完后需要配置 ssh，这里直接用网上的教程就可以了，需要额外注意的是需要把用户的 `.ssh` 目录映射到容器里面，以 root 用户为例:
+
+```yaml
+volumes:
+    - /root/.ssh:/root/.ssh:ro
+```
+
+实际在使用时会有一个问题: Renovate 在克隆时会使用 `root@your.gitlab.com`，这里的用户使用的是 `root` 用户，很显然这样是克隆不了的，我们需要换成 `git` 用户才行。
+
+这里需要修改启动命令:
+
+```sh
+/bin/sh -c 'git config --global url."ssh://git".insteadOf "ssh://root" && ./node_opts_exec.sh node_default src/community.js'
+```
+
+这里前面的 git 命令可以将 `ssh://root` 替换为 `ssh://git`，这样我们就可以克隆项目了。
+
+关于后面的命令，是从 `docker inspect` 查看镜像的启动命令查到的，照着填上去就可以了。
+
+### 过滤指定项目
+
+要想过滤指定的项目，例如只使用 `myApp` 组下的仓库，需要将环境变量 `MEND_RNV_AUTODISCOVER_FILTER` 的值设置为 `myApp/*`.
+
+为什么会说这个呢？是因为在官方的文档中没有写这个！这个是在 Github 的文档中找到的：[configuration-options.md](https://github.com/mend/renovate-ce-ee/blob/78b5728981a4cba356f25ba121cfd7229636f5bb/docs/configuration-options.md)。
+
+## 通过 API 触发任务
+
+[API 文档](https://github.com/mend/renovate-ce-ee/blob/78b5728981a4cba356f25ba121cfd7229636f5bb/docs/api.md)
+
+要想开启 API 功能，需要提供如下的配置：
+
+```env
+MEND_RNV_ADMIN_API_ENABLED=true
+MEND_RNV_SERVER_API_SECRET=<your secret>
+```
+
+之后在认证时，带上请求头即可:
+
+```
+Authorization: <your secret>
+```
+
+这里调用 `POST /api/job/add` 接口就可以手动触发同步任务，调用时需要提供具体的仓库。

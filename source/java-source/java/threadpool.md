@@ -99,6 +99,13 @@ private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
 
 # 3. 执行任务
 
+大致流程:
+
+1. 线程数小于核心线程数，尝试创建新线程并执行任务
+2. 若第一步创建失败，或者线程数大于等于核心线程数，则将任务添加到工作队列
+3. 如果工作队列满了，则创建新的工作线程执行任务，直到线程数量达到最大值
+4. 执行拒绝策略，拒绝任务执行
+
 ## 3.1 addWorker
 
 ```java
@@ -354,77 +361,38 @@ final void runWorker(Worker w) {
 
 在`runWorker`里我们可以发现，我们是通过worker来加了锁的，这里为什么要加锁呢？我们一个worker不是只有一个线程吗？
 
-首先观察一下Worker的实现，可以发现它**不是**可重入锁，这个可以去类比`ReentrantLock`，然后我们还知道，我们调用`shutdown`时，并不会停掉还在运行中的线程，停掉的是那些正在等待任务的线程，那么我们怎么判断一个Worker正处于那种状态呢？
-
-我们先从`shutdown`入手：
+其实这里在 `Worker` 类的注释上已经说明了:
 
 ```java
-public void shutdown() {
-    final ReentrantLock mainLock = this.mainLock;
-    mainLock.lock();
-    try {
-        checkShutdownAccess();
-        advanceRunState(SHUTDOWN);
-        // 中断闲置的worker
-        interruptIdleWorkers();
-        onShutdown(); // hook for ScheduledThreadPoolExecutor
-    } finally {
-        mainLock.unlock();
-    }
-    tryTerminate();
-}
-
-private void interruptIdleWorkers() {
-    interruptIdleWorkers(false);
-}
-
-private void interruptIdleWorkers(boolean onlyOne) {
-    final ReentrantLock mainLock = this.mainLock;
-    mainLock.lock();
-    try {
-        for (Worker w : workers) {
-            Thread t = w.thread;
-            // 看到这个tryLock没，如果成功拿到锁了，说明当前线程没有执行任务
-            if (!t.isInterrupted() && w.tryLock()) {
-                try {
-                    t.interrupt();
-                } catch (SecurityException ignore) {
-                } finally {
-                    w.unlock();
-                }
-            }
-            if (onlyOne)
-                break;
-        }
-    } finally {
-        mainLock.unlock();
-    }
-}
-
-// Worker
-public boolean tryLock()  { return tryAcquire(1); }
-
-// Worker
-protected boolean tryAcquire(int unused) {
-    if (compareAndSetState(0, 1)) {
-        setExclusiveOwnerThread(Thread.currentThread());
-        return true;
-    }
-    return false;
-}
+/**
+ * Class Worker mainly maintains interrupt control state for
+ * threads running tasks, along with other minor bookkeeping.
+ * This class opportunistically extends AbstractQueuedSynchronizer
+ * to simplify acquiring and releasing a lock surrounding each
+ * task execution.  This protects against interrupts that are
+ * intended to wake up a worker thread waiting for a task from
+ * instead interrupting a task being run.  We implement a simple
+ * non-reentrant mutual exclusion lock rather than use
+ * ReentrantLock because we do not want worker tasks to be able to
+ * reacquire the lock when they invoke pool control methods like
+ * setCorePoolSize.  Additionally, to suppress interrupts until
+ * the thread actually starts running tasks, we initialize lock
+ * state to a negative value, and clear it upon start (in
+ * runWorker).
+ */
+private final class Worker
+    extends AbstractQueuedSynchronizer
+    implements Runnable
+{
 ```
 
-在回到`Worker`，我们再看一眼构造器：
+首先这里需要知道，当 Worker 上锁了，就说明有任务正在执行，而这里用 AQS 可以防止：
 
-```java
-Worker(Runnable firstTask) {
-    setState(-1); // inhibit interrupts until runWorker 禁止中断直到worker启动，即线程启动
-    this.firstTask = firstTask;
-    this.thread = getThreadFactory().newThread(this);
-}
-```
+1. 本来是用来唤醒正在等待任务的工作线程的中断，却意外地中断了正在运行的任务(用锁表示工作状态)。
+2. 防止正在初始化的线程被中断，当 AQS 的 state 为 -1 时，表示正在初始化。
+3. 避免 Worker 多次获取锁(Worker 的实现是非重入的)，导致在调用核心方法时例如 `setCorePoolSize` 造成了重入(当缩小核心线程数时，会尝试回收空闲的线程，此时会尝试获取锁，如果拿到了，说明线程空闲)。
 
-所以说`Worker`的初始State为-1，用来禁止线程中断，在调用`runWorker`后，在最外部有一个`unlock`解锁操作用于将`Worker`状态设置为0
+
 
 # 4. mainLock
 

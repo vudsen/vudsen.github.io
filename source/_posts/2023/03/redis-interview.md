@@ -511,6 +511,9 @@ Redis提供了两个指令来生成RDB，一个是SAVE，这个命令会阻塞�
 
 [LInux fork的写时复制(copy on write)_fork写时复制_富士康质检员张全蛋的博客-CSDN博客](https://blog.csdn.net/qq_34556414/article/details/108399543)
 
+
+关于配置了 `save 900 1`，如果 900 秒内变更了 100 次，redis 会保存多少次 RDB 文件呢？经过试验后，实际仅会保存一次，在 900 秒后才会重新开始检查。
+
 ## 5.2 AOF
 
 AOF即Append Only File，它会记录在redis服务器上执行过的命令来实现持久化的目的。
@@ -617,28 +620,61 @@ LFU即Least Frequently Used-最不经常使用。其核心思想是“如果数�
 
 [LFU 缓存 - 提交记录 - 力扣（LeetCode）](https://leetcode.cn/submissions/detail/419560284/)
 
-Redis的LFU和上面的LFU有一些不一样，一般的LFU有如下缺点：
+[Redis中的LFU算法](https://www.cnblogs.com/linxiyue/p/10955533.html)
 
-- 新增的缓存容易被删除
+redis 中有两个参数可以调整 LFU 的相关配置：
 
-而Redis在此基础上会将每个数据的访问次数设置为`5`，每次访问会根据其上次访问时间<font color=red>扣除</font>一定的访问次数，然后再根据生成的一个随机数，决定是否对访问次数字段加一：
+```text
+lfu-log-factor 10
+lfu-decay-time 1
+```
 
-```c++
+开启了 LFU 后，每个键都会保存上次读取的时间和一个计数器，当计数器越低，表示读取频率越低，被删除的概率也就越高。为了防止键刚创建就被删除，每个键的计数器初始值都是 5。
+
+
+`counter` 随时间降低的代码: 
+
+```c
+// 获取和上次更新差了多少分钟
+unsigned long LFUTimeElapsed(unsigned long ldt) {
+    unsigned long now = LFUGetTimeInMinutes();
+    if (now >= ldt) return now-ldt;
+    return 65535-ldt+now;
+}
+
+unsigned long LFUDecrAndReturn(robj *o) {
+    unsigned long ldt = o->lru >> 8;
+    unsigned long counter = o->lru & 255;
+    // `lfu_decay_time`，默认是 1，也就是说每过 1 分钟， counter 就会降低一次
+    unsigned long num_periods = server.lfu_decay_time ? LFUTimeElapsed(ldt) / server.lfu_decay_time : 0;
+    if (num_periods)
+        counter = (num_periods > counter) ? 0 : counter - num_periods;
+    return counter;
+}
+```
+
+可以发现，`lfu-decay-time` 越小，counter 降低的越快。
+
+`counter` 每次查询增加的[代码](https://github.com/redis/redis/blob/04f63d4af74cb5aa0d1e12e05fa8f7f92cb2ef94/src/evict.c#L281-L289):
+
+```c
 uint8_t LFULogIncr(uint8_t counter) {
     if (counter == 255) return 255;
+    // 随机 roll 出一个 0 ~ 1 的数
     double r = (double)rand()/RAND_MAX;
+    // 用当前的 counter 减去初始的 5
     double baseval = counter - LFU_INIT_VAL;
     if (baseval < 0) baseval = 0;
-    // 访问次数越多，加一的概率越小
+    // 最后得到一个数，与 lfu_log_factor 成反比
     double p = 1.0/(baseval*server.lfu_log_factor+1);
+    // p 越大，counter 增长的机会越大
     if (r < p) counter++;
     return counter;
 }
 ```
 
-其中`server.lfu_log_factor`默认为10。
+可以发现，`lfu-log-factor` 越小，counter 增加的机会越多。
 
-因为访问计数器的长度为8位，最大为255，如果每次访问都加一，很可能会导致溢出。
 
 [16 | LFU算法和其他算法相比有优势吗？ (geekbang.org)](https://time.geekbang.org/column/article/413038)
 

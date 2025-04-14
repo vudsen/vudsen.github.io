@@ -165,7 +165,7 @@ public abstract class TransactionSynchronizationManager {
 
 这个类就是用于管理我们线程变量的绑定的：
 
-- `resources`: 保存当前线程的数据库连接，便于后续事务获取
+- `resources`: 保存相关的资源
 - `synchronizations`: 保存事务同步的回调，例如 `beforeCommit`、`afterCompletion` 等
 - `currentTransactionName`：保存事务的名称
 - `currentTransactionReadOnly`：标识当前事务是否只读
@@ -173,6 +173,17 @@ public abstract class TransactionSynchronizationManager {
 - `actualTransactionActive`: 当前线程是否真的开启了事务
 
 例如调用 `org.springframework.transaction.support.TransactionSynchronizationManager#isActualTransactionActive` 就可以判断当前线程是否开启了事务。
+
+---
+
+关于 `resources` 这里需要再讲一下，还是在这个类中，我们可以看到相关的使用方法: `public static Object getResource(Object key)`。这个方法的入参和出参都是 `Object`，那么怎么知道什么类型的 key 对应什么类型的资源呢？难道靠死记硬背硬编码吗？
+
+这里我也是看了很久才突然领悟到，这里并不是死记硬背或者硬编码，这里我们举几个调用该方法的例子看一下：
+
+- `(SqlSessionHolder) TransactionSynchronizationManager.getResource((SqlSessionFactory)sessionFactory)`
+- `(ConnectionHolder) TransactionSynchronizationManager.getResource((DataSource)this.obtainDataSource());`
+
+可以发现，我们的入参都是**类似于连接池的结构**，而出参都是这些 "连接池" 对应的资源，例如 `SqlSessionFactory` 的资源是 `SqlSession`，由于还需要存储一些额外信息，所以 spring 使用 `SqlSessionHolder` 将其包裹起来了，对于 `DataSource` 也是同样的效果。
 
 # SqlSession 的懒创建与 ThreadLocal 的绑定
 
