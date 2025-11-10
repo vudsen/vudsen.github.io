@@ -9,7 +9,8 @@ tags:
 # 1. 常用指令
 
 ## 1.1 用户
-- 新增用户：`useradd [username]`
+- 新增用户(会同时创建用户组)：`useradd [username]`
+- 新增用户并同时创建 home 目录: `useradd -m [username]`
 - 设置用户密码：`passwd [username]`
 - 删除用户：`userdel [username]`
 - 将用户添加到用户组(a为追加)：`usermod -aG [groupname] [username]`
