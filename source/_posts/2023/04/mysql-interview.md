@@ -140,8 +140,8 @@ ReadView 主要有下面几个字段:
 
 | 字段名称             | 说明                                                              |   |
 |------------------|-----------------------------------------------------------------|---|
-| m_low_limit_id   | "高水位线"，读操作不应该读取事务 id 大于等于该值的任何记录                                |   |
-| m_up_limit_id    | "低水位线"，读操作可以直接读取小于该值的任何记录                                       |   |
+| m_low_limit_id   | 当前系统中最小的未提交事务 ID                                |   |
+| m_up_limit_id    | 生成 Read View 时，下一次将要分配的事务 ID                                       |   |
 | m_creator_trx_id | 创建该 ReadView 的事务 id                                             |   |
 | m_ids            | 当 ReadView 创建时，所有正在运行的事务id                                      |   |
 | m_low_limit_no   | 事务不需要查看事务 id 小于该值的 undolog。小于该值的undolog如果不再被其它 ReadView需要，可以被清除 |   |
@@ -149,15 +149,40 @@ ReadView 主要有下面几个字段:
 
 详细的生成规则：
 
-- `m_low_limit_id`: 下一次生成的事务 id
-- `m_up_limit_id`: 当前还没有提交的、最小的事务 id
 - `m_low_limit_no`: 所有持久化完毕的、最大的事务 id (小于该 id 的事务已经全部持久化完成)
 
+关于 `m_low_limit_id` 和 `m_up_limit_id`:
+
+```
+m_low_limit_id <= 活跃事务 < m_up_limit_id
+```
 
 还需要注意的一点是：
 
 - 在 ReadCommitted 隔离级别下，每次查询都会创建新的 ReadView
 - 在 RepeatableRead 隔离级别下，仅第一次查询会创建 ReadView，后续查询全部复用第一次创建的，这样就解决了幻读的问题 (虽然 RepeatableRead 在定义时没有解决幻读，但是在 mysql 的实现中，它就是解决了幻读的，相当于一个是接口，一个是实现)。
+
+可见性判断：
+
+1️⃣ trx_id < m_low_limit_id
+
+👉 一定可见
+
+- 说明：这个事务在你创建 Read View 前已经提交了
+
+2️⃣ trx_id >= m_up_limit_id
+
+👉 一定不可见
+
+- 说明：这是你之后才开始的事务（未来的版本）
+
+3️⃣ m_low_limit_id <= trx_id < m_up_limit_id
+
+👉 看它是否在活跃事务列表中
+
+在 active list 👉 ❌ 不可见（还没提交）
+
+不在 👉 ✅ 可见（已提交）
 
 ---
 
